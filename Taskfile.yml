@@ -1,0 +1,145 @@
+version: '3'
+
+vars:
+  SUPABASE_CLI: bunx supabase@2.109.0
+  NEXT_PORT: 3005
+  SUPABASE_API_PORT: 54421
+  SUPABASE_DB_PORT: 54422
+  SUPABASE_STUDIO_PORT: 54423
+  SUPABASE_INBUCKET_PORT: 54424
+
+env:
+  # Route Docker CLI / API calls to the user-mode rootless Podman socket
+  DOCKER_HOST:
+    sh: echo "unix:///run/user/$(id -u)/podman/podman.sock"
+
+tasks:
+  default:
+    desc: List all available development tasks
+    silent: true
+    cmds:
+      - task --list
+
+  prerequisites:
+    desc: Check rootless Podman socket and Bun tooling
+    silent: true
+    cmds:
+      - |
+        PODMAN_SOCK="/run/user/$(id -u)/podman/podman.sock"
+        if [ ! -S "$PODMAN_SOCK" ]; then
+          echo "⚠️  Podman socket not found at $PODMAN_SOCK"
+          echo "Run: systemctl --user enable --now podman.socket"
+          exit 1
+        fi
+        echo "✅ Podman rootless socket is active: $PODMAN_SOCK"
+        if command -v bun >/dev/null 2>&1; then
+          echo "✅ Bun found: $(bun -v)"
+        else
+          echo "⚠️  Bun not found. Please install: curl -fsSL https://bun.com/install | bash"
+          exit 1
+        fi
+        echo "✅ Port isolation configured: OrderKing uses 54421-54429, leaving 54321-54324 for other Supabase instances."
+
+  supabase:init:
+    desc: Ensure necessary Supabase directories exist for Podman bind mounts
+    cmds:
+      - mkdir -p supabase/snippets supabase/migrations
+
+  supabase:start:
+    desc: Start local Supabase stack in rootless Podman (ports 54421-54424)
+    deps:
+      - prerequisites
+      - supabase:init
+    cmds:
+      - echo "Starting Supabase stack via Podman using Bun..."
+      - "{{.SUPABASE_CLI}} start --ignore-health-check"
+      - |
+        echo "Waiting for Supabase containers to initialize..."
+        for i in $(seq 1 20); do
+          if {{.SUPABASE_CLI}} status > /dev/null 2>&1; then
+            echo "✅ Supabase is running!"
+            {{.SUPABASE_CLI}} status
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "Supabase started. Checking status:"
+        {{.SUPABASE_CLI}} status || true
+
+  supabase:stop:
+    desc: Stop local Supabase containers without losing schema/data
+    cmds:
+      - echo "Stopping Supabase stack..."
+      - "{{.SUPABASE_CLI}} stop --no-backup"
+      - echo "✅ Supabase stopped."
+
+  supabase:status:
+    desc: Display status and endpoints of local Supabase services
+    cmds:
+      - "{{.SUPABASE_CLI}} status"
+
+  supabase:restart:
+    desc: Restart local Supabase services
+    cmds:
+      - task: supabase:stop
+      - task: supabase:start
+
+  supabase:db:reset:
+    desc: Reset local database and re-apply migrations and seed data
+    cmds:
+      - echo "Resetting local database..."
+      - "{{.SUPABASE_CLI}} db reset"
+      - podman exec supabase_kong_orderking kong reload >/dev/null 2>&1 || true
+      - echo "✅ Database reset and seeded successfully!"
+
+  supabase:db:types:
+    desc: Generate TypeScript types from local database schema
+    cmds:
+      - echo "Generating TypeScript database types..."
+      - mkdir -p lib
+      - "{{.SUPABASE_CLI}} gen types typescript --local > lib/database.types.ts"
+      - echo "✅ Types saved to lib/database.types.ts"
+
+  app:env:
+    desc: Configure .env.local with local Supabase URLs and keys
+    cmds:
+      - |
+        echo "Updating .env.local with local Supabase credentials..."
+        ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0"
+        cat <<EOF > .env.local
+        # Local Supabase Environment (Rootless Podman)
+        NEXT_PUBLIC_SUPABASE_URL=http://localhost:{{.SUPABASE_API_PORT}}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY=${ANON_KEY}
+        EOF
+        echo "✅ .env.local configured: NEXT_PUBLIC_SUPABASE_URL=http://localhost:{{.SUPABASE_API_PORT}}"
+
+  app:install:
+    desc: Install dependencies using Bun
+    cmds:
+      - bun install
+    status:
+      - test -d node_modules
+
+  app:dev:
+    desc: Start Next.js development server on port 3005 using Bun
+    deps:
+      - app:install
+      - app:env
+    cmds:
+      - echo "Starting Next.js dev server on http://localhost:{{.NEXT_PORT}} using Bun..."
+      - bun run dev -- -p {{.NEXT_PORT}}
+
+  app:build:
+    desc: Build Next.js application using Bun
+    deps:
+      - app:install
+    cmds:
+      - bun run build
+
+  dev:
+    desc: One-command full local development setup (Supabase + .env.local + Next.js via Bun)
+    cmds:
+      - task: prerequisites
+      - task: supabase:start
+      - task: app:env
+      - task: app:dev

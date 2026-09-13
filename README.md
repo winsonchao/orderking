@@ -144,6 +144,24 @@ npm run dev        # http://localhost:3000
 | `NEXT_PUBLIC_SUPABASE_URL` | Your Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anonymous (public) key |
 
+### Local Supabase (Rootless Podman via Taskfile & Bun)
+
+If running local Supabase via rootless Podman with `task` and `bun`:
+
+```bash
+# One command: starts Supabase, creates .env.local, and launches Next.js on port 3005
+task dev
+
+# Or run individual tasks:
+task supabase:start     # Start local Supabase containers (ports 54421-54424)
+task supabase:status    # Inspect local service URLs and keys
+task supabase:db:reset  # Reset schema, apply migrations & seed demo restaurant
+task supabase:db:types  # Regenerate TypeScript types into lib/database.types.ts
+task supabase:stop      # Stop local Supabase containers
+task app:dev            # Start Next.js dev server on port 3005 (via Bun)
+task app:build          # Production build (via Bun)
+```
+
 ---
 
 ## 🔬 Engineering highlights
